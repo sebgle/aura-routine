@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
 import shutil
 import subprocess
@@ -1154,6 +1155,49 @@ def local_broadcasts() -> list[str]:
     return out
 
 
+# The WiZ wire protocol, spoken directly. A bulb answers getPilot on UDP 38899.
+WIZ_PORT = 38899
+WIZ_GET_PILOT = b'{"method":"getPilot","params":{}}'
+
+
+async def _unicast_sweep(prefix: str, seconds: float = 4.0, log=print) -> list[dict]:
+    """
+    Ask every address on the subnet directly, instead of broadcasting.
+
+    Broadcast discovery is the fragile part: Windows Firewall drops unsolicited
+    inbound UDP by default, many routers have AP isolation, and a network marked
+    "Public" blocks far more than a "Private" one. A unicast probe is an ordinary
+    request/response, so it survives all three. 254 packets is nothing.
+    """
+    import asyncio as aio
+
+    loop = aio.get_running_loop()
+    found: dict[str, dict] = {}
+
+    class Probe(aio.DatagramProtocol):
+        def datagram_received(self, data, addr):
+            try:
+                d = json.loads(data.decode())
+            except Exception:  # noqa: BLE001
+                return
+            res = d.get("result") or {}
+            if addr[0] not in found and ("mac" in res or d.get("method") == "getPilot"):
+                found[addr[0]] = {"ip": addr[0], "mac": res.get("mac", "?")}
+                log(f"    found {addr[0]}  (mac {res.get('mac', '?')})")
+
+    transport, _ = await loop.create_datagram_endpoint(
+        Probe, local_addr=("0.0.0.0", 0), allow_broadcast=True)
+    try:
+        for i in range(1, 255):
+            transport.sendto(WIZ_GET_PILOT, (f"{prefix}.{i}", WIZ_PORT))
+            if i % 32 == 0:
+                await aio.sleep(0.02)      # let the NIC breathe
+        await aio.sleep(seconds)
+    finally:
+        transport.close()
+    return list(found.values())
+
+
 async def _scan(log=print) -> list:
     """Broadcast on every local subnet. Returns unique bulbs."""
     from pywizlight import discovery
@@ -1208,9 +1252,28 @@ def discover() -> int:
     """
     print("aura - find your bulb\n")
 
+    async def full_scan():
+        bulbs = await _scan()
+        if bulbs:
+            return [{"ip": b.ip, "mac": b.mac} for b in bulbs]
+        print("\n  Broadcast found nothing. Asking every address directly")
+        print("  (this works even when a firewall blocks broadcast replies) ...")
+        out: list[dict] = []
+        seen: set[str] = set()
+        for bcast in local_broadcasts():
+            if bcast == "255.255.255.255":
+                continue
+            prefix = bcast.rsplit(".", 1)[0]
+            print(f"    sweeping {prefix}.1-254 ...")
+            for hit in await _unicast_sweep(prefix, log=print):
+                if hit["ip"] not in seen:
+                    seen.add(hit["ip"])
+                    out.append(hit)
+        return out
+
     while True:
         try:
-            bulbs = asyncio.run(_scan())
+            bulbs = asyncio.run(full_scan())
         except ImportError:
             # Almost always the system Python instead of the venv's.
             print("  pywizlight is not installed in this interpreter.\n")
@@ -1223,7 +1286,7 @@ def discover() -> int:
             bulbs = []
 
         if bulbs:
-            ip = bulbs[0].ip
+            ip = bulbs[0]["ip"]
             if len(bulbs) > 1:
                 print(f"\n{len(bulbs)} bulbs found. Using the first ({ip}).")
                 print("Edit aura.toml by hand if you want a different one.")
@@ -1243,7 +1306,14 @@ def discover() -> int:
         print("   3. This PC is on a different network from the bulb. WiZ is")
         print("      2.4GHz only - if you are on a 5GHz SSID that does not bridge")
         print("      to it, broadcast will not cross.")
-        print("   4. Guest network, VPN, or an 'AP isolation' setting on the router.")
+        print("   4. Windows Firewall is dropping the replies. The bulb answers,")
+        print("      Windows discards it. Allow python.exe through, or run once")
+        print("      from an admin PowerShell:")
+        print('        New-NetFirewallRule -DisplayName "aura" -Direction Inbound '
+              "-Protocol UDP -LocalPort 38899,38900 -Action Allow")
+        print("   5. Your WiFi is set to 'Public' rather than 'Private' in Windows,")
+        print("      which blocks local network traffic. Settings -> Network -> WiFi.")
+        print("   6. Guest network, VPN, or 'AP isolation' on the router.")
 
         try:
             choice = input("\n  [R] scan again   [I] type the IP   [Q] give up : ").strip().lower()
