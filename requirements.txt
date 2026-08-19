@@ -1,0 +1,28 @@
+# core — needed by the sunrise itself
+pywizlight>=0.6.3
+
+# audio playback. Chosen over sounddevice/soundfile because it handles mp3
+# (what edge-tts emits and what your motivational clips will be), gives
+# per-channel volume, and is one dependency instead of three.
+#
+# pygame-ce, NOT pygame. Upstream pygame ships Windows wheels only up to
+# cp313; on anything newer pip falls back to a source build that needs MSVC
+# and fails. pygame-ce publishes through cp315 and is a genuine drop-in —
+# it still imports as `pygame`, so no code changes.
+#
+# Do not install both: they provide the same module and will collide.
+pygame-ce>=2.5
+
+# text-to-speech. edge-tts needs internet AT RENDER TIME ONLY — nothing
+# touches the network at 07:00.
+edge-tts>=6.1
+
+# offline TTS fallback (Windows SAPI). Only needed if you set
+# engine = "sapi" in lines.toml.
+pyttsx3>=2.90
+
+# the control panel
+fastapi>=0.110
+uvicorn>=0.29
+# multipart form parsing, for uploading audio through the page
+python-multipart>=0.0.9

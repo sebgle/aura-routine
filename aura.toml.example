@@ -1,0 +1,16 @@
+# Hardware and voice. Copy this to aura.toml and set your bulb's IP.
+# Everything you change day to day lives in the web page instead.
+
+[bulb]
+# Find it with:  python aura_web.py --discover
+# Then set a DHCP reservation for it in your router — if the lease changes
+# at 3am the alarm fails with no obvious cause.
+ip = "192.168.1.50"
+
+[voice]
+# "edge" — Microsoft neural voices. Free, no key, needs internet AT RENDER
+#          TIME ONLY. Nothing touches the network while a routine runs.
+# "sapi" — Windows built-in. Offline, always available, robotic.
+engine = "edge"
+name = "en-US-GuyNeural"
+rate = "+0%"

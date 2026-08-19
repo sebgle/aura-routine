@@ -1,0 +1,28 @@
+# Your configuration — times, tasks, volumes. Created on first run.
+settings.json
+aura.toml
+
+# Runtime state
+last_fired.json
+aura.log
+
+# Audio. All of it stays local:
+#   voice/   synthesised speech, regenerated in seconds
+#   custom/  your own recordings
+#   nags/    your get-up reminders
+#   motivational/, piano/  your music libraries
+audio/voice/
+audio/custom/
+audio/nags/
+audio/keepalive.wav
+audio/motivational/*
+audio/piano/*
+!audio/motivational/.gitkeep
+!audio/piano/.gitkeep
+!audio/*/README.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
