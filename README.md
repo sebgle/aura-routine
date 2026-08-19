@@ -66,9 +66,9 @@ Both bind to `127.0.0.1` only and aren't reachable from your network.
 
 1. Set your **wake** and **asleep-by** times. The schedule underneath recalculates as you type.
 2. Edit the **morning** and **evening** tasks. Evening tasks have a duration — that's what decides when the wind-down starts.
-3. Press **Prepare voice**. This synthesises anything you haven't recorded yourself.
-4. Optionally press ● next to any task to **record it in your own voice** — that always overrides the synthesised version.
-5. Record a few **get-up reminders**. They play in rotation, not at random.
+3. Pick a **voice** and press Preview to hear it, then press **Prepare voice** to synthesise every line you haven't supplied yourself.
+4. Optionally give any line a real voice — press ● to **record it**, or ↑ to **upload an audio file**. Either overrides the synthesised version, and × goes back. No microphone on the machine? The record button hides itself and upload still works.
+5. Add a few **get-up reminders**, recorded or uploaded. They play in rotation, not at random.
 6. Drop audio into the two libraries.
 7. Press **Run morning** to try it. Set *Sunrise length* to 1 minute so you're not waiting.
 
@@ -177,7 +177,7 @@ python aura_web.py --audio-check # open the audio device, print each attempt, be
 | `aura.toml` | Bulb IP, TTS voice | no — copied from `aura.toml.example` |
 | `settings.json` | Times, tasks, volumes, fade lengths | no — the settings page writes it |
 | `audio/voice/` | Synthesised speech | no — regenerated in seconds |
-| `audio/custom/`, `audio/nags/` | Your recordings | no |
+| `audio/custom/`, `audio/nags/` | Your recordings and uploads | no |
 | `audio/motivational/`, `audio/piano/` | Your music | no |
 
 Everything personal stays on your machine. A clone gives you the code and

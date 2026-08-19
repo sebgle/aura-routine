@@ -74,9 +74,17 @@ class SpeechLibrary:
     def _save(self) -> None:
         self.manifest_path.write_text(json.dumps(self.manifest, indent=2), "utf-8")
 
+    # Recording from the browser produces wav; an uploaded file could be
+    # anything. Order is preference, not priority of correctness.
+    CUSTOM_EXTS = (".wav", ".mp3", ".ogg", ".flac", ".m4a")
+
     def custom_path(self, line_id: str) -> Path | None:
-        p = self.custom_dir / f"{line_id}.wav"
-        return p if p.exists() else None
+        """Your own clip for this line, whatever format it arrived in."""
+        for ext in self.CUSTOM_EXTS:
+            p = self.custom_dir / f"{line_id}{ext}"
+            if p.exists():
+                return p
+        return None
 
     def path_for(self, line_id: str) -> Path | None:
         """Your recording if there is one, otherwise the synthesised clip."""

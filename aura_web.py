@@ -194,7 +194,9 @@ async def get_settings():
         "schedule": s.schedule_summary(),
         "unrendered": [x["id"] for x in lib.stale(specs)],
         "libraries": {k: [p.name for p in playlist(v)] for k, v in LIBRARIES.items()},
-        "recorded": [p.stem for p in CUSTOM_DIR.glob("*.wav")],
+        "recorded": sorted({p.stem for p in CUSTOM_DIR.iterdir()
+                            if p.suffix.lower() in SpeechLibrary.CUSTOM_EXTS}
+                           if CUSTOM_DIR.exists() else set()),
         "nags": [p.name for p in playlist(NAG_DIR)],
         "fixed": [{"id": k, "text": v} for k, v in S.FIXED_LINES.items()],
     }
@@ -327,6 +329,48 @@ async def remove(name: str, filename: str):
 # and which would need ffmpeg to convert.
 
 
+# Enough of each container's header to tell audio from a PDF someone dragged
+# in by mistake. Not a full decode — the browser does that when you preview.
+AUDIO_MAGIC = {
+    ".wav": [b"RIFF"],
+    ".ogg": [b"OggS"],
+    ".flac": [b"fLaC"],
+    ".mp3": [b"ID3", b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xfa"],
+    ".m4a": [b"ftyp"],          # appears at offset 4
+}
+
+
+def check_audio(path: Path, suffix: str) -> tuple[bool, str]:
+    """Validate an uploaded clip. WAVs get parsed properly; others sniffed."""
+    suffix = suffix.lower()
+    if suffix == ".wav":
+        return check_wav(path)
+    if suffix not in AUDIO_MAGIC:
+        return False, f"{suffix or 'that'} is not a supported audio format"
+    size = path.stat().st_size
+    if size < 1024:
+        return False, "that file is too small to be audio"
+    head = path.read_bytes()[:16]
+    if not any(m in head for m in AUDIO_MAGIC[suffix]):
+        return False, f"that does not look like a real {suffix.lstrip('.')} file"
+    return True, f"{size // 1024} KB {suffix.lstrip('.')}"
+
+
+def custom_file(line_id: str) -> Path | None:
+    """The existing custom clip for a line, in whatever format."""
+    for ext in SpeechLibrary.CUSTOM_EXTS:
+        p = CUSTOM_DIR / f"{line_id}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def clear_custom(line_id: str) -> None:
+    """Only ever one clip per line, so a new one replaces every old format."""
+    for ext in SpeechLibrary.CUSTOM_EXTS:
+        (CUSTOM_DIR / f"{line_id}{ext}").unlink(missing_ok=True)
+
+
 def check_wav(path: Path) -> tuple[bool, str]:
     """
     Confirm a WAV is actually playable before anything tries to play it.
@@ -368,19 +412,52 @@ async def record_line(line_id: str, file: UploadFile = File(...)):
         tmp.unlink(missing_ok=True)
         note(f"rejected recording for {safe}: {detail}")
         return JSONResponse({"ok": False, "error": detail}, 400)
+    clear_custom(safe)
     target = CUSTOM_DIR / f"{safe}.wav"
     tmp.replace(target)
     note(f"recorded {safe} ({detail})")
     return {"ok": True, "id": safe, "detail": detail}
 
 
+@app.post("/api/upload-line/{line_id}")
+async def upload_line(line_id: str, file: UploadFile = File(...)):
+    """
+    Use an audio file for one line, instead of recording it.
+
+    Same override as a recording — this exists because plenty of desktops have
+    no microphone, and you should still be able to use a real voice.
+    """
+    safe = "".join(ch for ch in line_id if ch.isalnum() or ch in "_-")
+    if not safe:
+        return JSONResponse({"ok": False, "error": "bad line id"}, 400)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in SpeechLibrary.CUSTOM_EXTS:
+        return JSONResponse(
+            {"ok": False, "error": f"use one of: "
+                                   f"{', '.join(e.lstrip('.') for e in SpeechLibrary.CUSTOM_EXTS)}"},
+            400)
+    CUSTOM_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CUSTOM_DIR / f".{safe}.part"
+    with tmp.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    ok, detail = check_audio(tmp, suffix)
+    if not ok:
+        tmp.unlink(missing_ok=True)
+        note(f"rejected upload for {safe}: {detail}")
+        return JSONResponse({"ok": False, "error": detail}, 400)
+    clear_custom(safe)
+    tmp.replace(CUSTOM_DIR / f"{safe}{suffix}")
+    note(f"uploaded {safe}{suffix} ({detail})")
+    return {"ok": True, "id": safe, "detail": detail}
+
+
 @app.delete("/api/record/{line_id}")
 async def unrecord_line(line_id: str):
     """Delete a recording. The line falls back to TTS with no other change."""
-    target = CUSTOM_DIR / f"{Path(line_id).name}.wav"
-    if target.exists():
-        target.unlink()
-        note(f"removed recording {line_id}")
+    safe = Path(line_id).name
+    if custom_file(safe):
+        clear_custom(safe)
+        note(f"removed custom clip for {safe}")
     return {"ok": True}
 
 
@@ -388,18 +465,21 @@ async def unrecord_line(line_id: str):
 async def add_nag(file: UploadFile = File(...)):
     """Append another get-up reminder. They play in rotation, not at random."""
     NAG_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "rec.wav").suffix.lower() or ".wav"
+    if suffix not in SpeechLibrary.CUSTOM_EXTS:
+        return JSONResponse({"ok": False, "error": f"unsupported format {suffix}"}, 400)
     tmp = NAG_DIR / ".upload.part"
     with tmp.open("wb") as out:
         shutil.copyfileobj(file.file, out)
-    ok, detail = check_wav(tmp)
+    ok, detail = check_audio(tmp, suffix)
     if not ok:
         tmp.unlink(missing_ok=True)
         note(f"rejected reminder: {detail}")
         return JSONResponse({"ok": False, "error": detail}, 400)
     n = 1
-    while (NAG_DIR / f"nag{n:02d}.wav").exists():
+    while any((NAG_DIR / f"nag{n:02d}{e}").exists() for e in SpeechLibrary.CUSTOM_EXTS):
         n += 1
-    target = NAG_DIR / f"nag{n:02d}.wav"
+    target = NAG_DIR / f"nag{n:02d}{suffix}"
     tmp.replace(target)
     note(f"added get-up reminder {target.name} ({detail})")
     return {"ok": True, "name": target.name, "detail": detail}
@@ -764,8 +844,9 @@ button.d{background:none;color:var(--bad);border:1px solid var(--line)}
   <div class="card">
     <h2>Spoken lines</h2>
     <div class="hint" style="margin:0 0 14px">
-      Synthesised by default. Record any of them in your own voice and yours
-      wins — delete the recording to go back.</div>
+      Synthesised by default. Record one (&#9679;) or upload an audio file
+      (&#8593;) and yours is used instead - &times; goes back to the chosen
+      voice. No microphone on this machine? Upload works either way.</div>
     <div id="fixed"></div>
   </div>
 
@@ -961,13 +1042,52 @@ function prev(kind,name){
   AUD.play().catch(e=>toast('Could not play: '+e.message,true));
 }
 
+// No microphone is common on a desktop, so the record button is hidden
+// rather than offered and then failing. Upload is always available.
+const HAS_MIC = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
 function recBtn(id){
   const has=(ST.recorded||[]).includes(id);
-  return `<button class="rec ${has?'has':''}" onclick="toggleRec('${id}',this)"
-     title="${has?'Re-record':'Record in your voice'}">●</button>`
-   +(has?`<button class="play" onclick="prev('line','${id}')" title="Play">▶</button>
-          <button class="x" onclick="unrec('${id}')" title="Use synthesised voice">×</button>`
-        :'');
+  const rec = HAS_MIC
+    ? `<button class="rec ${has?'has':''}" onclick="toggleRec('${id}',this)"
+         title="${has?'Re-record':'Record in your voice'}">&#9679;</button>` : '';
+  const up = `<button class="play" onclick="uploadLine('${id}')"
+      title="Use an audio file for this line">&#8593;</button>`;
+  const rest = has
+    ? `<button class="play" onclick="prev('line','${id}')" title="Play">&#9654;</button>
+       <button class="x" onclick="unrec('${id}')" title="Back to the chosen voice">&times;</button>`
+    : '';
+  return rec + up + rest;
+}
+
+function uploadLine(id){
+  const i=document.createElement('input');
+  i.type='file'; i.accept='audio/*';
+  i.onchange=async()=>{
+    if(!i.files.length)return;
+    const fd=new FormData(); fd.append('file', i.files[0]);
+    toast('Uploading...');
+    const r=await fetch('/api/upload-line/'+id,{method:'POST',body:fd});
+    const j=await r.json();
+    toast(j.ok?('Using your file - '+(j.detail||'')):j.error,!j.ok);
+    load();
+  };
+  i.click();
+}
+
+function uploadNag(){
+  const i=document.createElement('input');
+  i.type='file'; i.accept='audio/*'; i.multiple=true;
+  i.onchange=async()=>{
+    for(const f of i.files){
+      const fd=new FormData(); fd.append('file', f);
+      const r=await fetch('/api/nags',{method:'POST',body:fd});
+      const j=await r.json();
+      if(!j.ok){toast(j.error,true);break;}
+    }
+    toast('Reminders added'); load();
+  };
+  i.click();
 }
 
 function taskRow(t,kind,i){
@@ -1000,6 +1120,10 @@ function drawSchedule(sc){
    +`of near-darkness before lights out at <b>${sc.bedtime}</b>.`;
 }
 function drawNags(){
+  if(!HAS_MIC){
+    const b=$('nagrec'); if(b) b.style.display='none';
+    const st=$('nagstate'); if(st) st.textContent='No microphone - upload audio instead';
+  }
   const ns=ST.nags||[];
   $('nags').innerHTML=ns.length?ns.map((f,i)=>
     `<div class="task"><span style="flex:1;color:var(--dim);font-size:15px">
