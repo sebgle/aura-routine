@@ -55,9 +55,15 @@ Step 5 "Checking audio"
 Step 6 "Looking for your bulb"
 Write-Host "    (enable 'Allow local communication' in the WiZ app first)" -ForegroundColor Gray
 & $venvPy aura_web.py --discover
+$bulbFound = ($LASTEXITCODE -eq 0)
 
 Write-Host "`n---------------------------------------------" -ForegroundColor DarkGray
-Write-Host "Setup complete." -ForegroundColor Green
+if ($bulbFound) { Write-Host "Setup complete." -ForegroundColor Green }
+else {
+    Write-Host "Setup finished, but no bulb is configured yet." -ForegroundColor Yellow
+    Write-Host "Everything else is installed. When the bulb is ready, run:" -ForegroundColor Gray
+    Write-Host "  .\.venv\Scripts\python.exe aura_web.py --discover" -ForegroundColor Gray
+}
 Write-Host ""
 Write-Host "Start it:      .\.venv\Scripts\python.exe aura_web.py" -ForegroundColor White
 Write-Host "Settings:      http://127.0.0.1:8770"                   -ForegroundColor Gray

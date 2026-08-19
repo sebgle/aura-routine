@@ -1117,54 +1117,158 @@ poll(); setInterval(poll,400);
 </script></body></html>"""
 
 
-def discover() -> int:
-    """Find WiZ bulbs on the LAN and offer to write the first one into aura.toml."""
-    import re
+def local_broadcasts() -> list[str]:
+    """
+    Every IPv4 broadcast address this machine might reach the bulb on.
+
+    A Windows machine usually has more than one adapter — Ethernet, WiFi, and
+    often Hyper-V or WSL virtual ones. Broadcasting only to the default route's
+    subnet is the single most common reason discovery finds nothing while the
+    bulb is sitting there working fine.
+    """
     import socket
 
-    async def go():
-        from pywizlight import discovery
-
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            sock.connect(("8.8.8.8", 80))
-            local = sock.getsockname()[0]
-        except OSError:
-            local = "192.168.1.1"
-        finally:
-            sock.close()
-        bcast = ".".join(local.split(".")[:3]) + ".255"
-        print(f"this machine is {local}, broadcasting to {bcast} ...\n")
-        return await discovery.discover_lights(broadcast_space=bcast)
-
+    ips: set[str] = set()
     try:
-        bulbs = asyncio.run(go())
-    except Exception as e:  # noqa: BLE001
-        print(f"discovery failed: {e}")
-        return 1
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            ips.add(info[4][0])
+    except OSError:
+        pass
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:  # whichever interface owns the default route
+        sock.connect(("8.8.8.8", 80))
+        ips.add(sock.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        sock.close()
 
-    if not bulbs:
-        print("no bulbs found.")
-        print("  - is 'Allow local communication' enabled in the WiZ app?")
-        print("  - WiZ is 2.4GHz only; can this machine reach that network?")
-        print("  - some routers block broadcast between wired and wireless clients")
-        return 1
+    ips = {ip for ip in ips if not ip.startswith(("127.", "169.254."))}
+    casts = [".".join(ip.split(".")[:3]) + ".255" for ip in sorted(ips)]
+    casts.append("255.255.255.255")          # last resort
+    seen, out = set(), []
+    for c in casts:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
-    for b in bulbs:
-        print(f"  found {b.ip}  (mac {b.mac})")
+
+async def _scan(log=print) -> list:
+    """Broadcast on every local subnet. Returns unique bulbs."""
+    from pywizlight import discovery
+
+    found, seen = [], set()
+    for bcast in local_broadcasts():
+        log(f"  scanning {bcast} ...")
+        try:
+            bulbs = await discovery.discover_lights(broadcast_space=bcast)
+        except Exception as e:  # noqa: BLE001 - one bad adapter must not stop the rest
+            log(f"    ({type(e).__name__}: {e})")
+            continue
+        for b in bulbs:
+            if b.ip not in seen:
+                seen.add(b.ip)
+                found.append(b)
+                log(f"    found {b.ip}  (mac {b.mac})")
+    return found
+
+
+def _write_ip(ip: str) -> bool:
+    import re
 
     path = HERE / "aura.toml"
     if not path.exists() and (HERE / "aura.toml.example").exists():
         shutil.copyfile(HERE / "aura.toml.example", path)
     text = path.read_text("utf-8")
-    new = re.sub(r'(?m)^ip = ".*"$', f'ip = "{bulbs[0].ip}"', text, count=1)
-    if new != text:
-        path.write_text(new, "utf-8")
-        print(f"\nwrote {bulbs[0].ip} into aura.toml")
-    else:
-        print(f"\ncould not update aura.toml automatically — set ip = \"{bulbs[0].ip}\"")
-    print("set a DHCP reservation for that address in your router.")
-    return 0
+    new_text = re.sub(r'(?m)^ip = ".*"$', f'ip = "{ip}"', text, count=1)
+    if new_text == text:
+        return False
+    path.write_text(new_text, "utf-8")
+    return True
+
+
+async def _reachable(ip: str) -> bool:
+    from aura.light import AuraLight, BulbUnreachable
+
+    try:
+        await AuraLight(ip=ip, log=lambda m: None).connect(retries=2, delay_s=1)
+        return True
+    except (BulbUnreachable, Exception):  # noqa: BLE001
+        return False
+
+
+def discover() -> int:
+    """
+    Find the bulb, and keep offering to retry rather than giving up.
+
+    Discovery failing once means almost nothing — the usual causes are a
+    setting you have not flipped yet or a bulb that is switched off at the
+    socket, both of which you fix in ten seconds and want to try again.
+    """
+    print("aura - find your bulb\n")
+
+    while True:
+        try:
+            bulbs = asyncio.run(_scan())
+        except ImportError:
+            # Almost always the system Python instead of the venv's.
+            print("  pywizlight is not installed in this interpreter.\n")
+            print("  Use the venv's Python:")
+            print("      .\\.venv\\Scripts\\python.exe aura_web.py --discover")
+            print("  or install it:  pip install -r requirements.txt")
+            return 1
+        except Exception as e:  # noqa: BLE001
+            print(f"  scan failed: {e}")
+            bulbs = []
+
+        if bulbs:
+            ip = bulbs[0].ip
+            if len(bulbs) > 1:
+                print(f"\n{len(bulbs)} bulbs found. Using the first ({ip}).")
+                print("Edit aura.toml by hand if you want a different one.")
+            if _write_ip(ip):
+                print(f"\nwrote ip = \"{ip}\" into aura.toml")
+            else:
+                print(f"\ncould not edit aura.toml - set ip = \"{ip}\" yourself")
+            print("Now set a DHCP reservation for that address in your router,")
+            print("so the alarm does not fail one morning when the lease changes.")
+            return 0
+
+        print("\n  No bulbs found. The usual reasons, in order of likelihood:\n")
+        print("   1. 'Allow local communication' is off.")
+        print("      WiZ app -> your bulb -> settings. This is nearly always it.")
+        print("   2. The lamp is switched off at the socket, or the bulb is not")
+        print("      paired to your WiFi yet.")
+        print("   3. This PC is on a different network from the bulb. WiZ is")
+        print("      2.4GHz only - if you are on a 5GHz SSID that does not bridge")
+        print("      to it, broadcast will not cross.")
+        print("   4. Guest network, VPN, or an 'AP isolation' setting on the router.")
+
+        try:
+            choice = input("\n  [R] scan again   [I] type the IP   [Q] give up : ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 1
+
+        if choice.startswith("q"):
+            print("\n  Skipped. Set the IP later in aura.toml, or re-run:")
+            print("      python aura_web.py --discover")
+            return 1
+        if choice.startswith("i"):
+            ip = input("  bulb IP (e.g. 192.168.1.42): ").strip()
+            if not ip:
+                continue
+            print(f"  checking {ip} ...")
+            if asyncio.run(_reachable(ip)):
+                print("  it answers.")
+                if _write_ip(ip):
+                    print(f"  wrote ip = \"{ip}\" into aura.toml")
+                return 0
+            print(f"  {ip} did not answer - check the address and try again.")
+            continue
+        # anything else, including plain Enter, scans again
+        print()
 
 
 def audio_check() -> int:
