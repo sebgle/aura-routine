@@ -199,12 +199,19 @@ class MusicPlayer:
         self.playing = False
         self._ducked = False
         self._pump: asyncio.Task | None = None
+        self._fade: asyncio.Task | None = None
         self._current: Path | None = None
 
     # -- control ------------------------------------------------------------
 
-    def start(self, folder: Path, shuffle: bool = True) -> bool:
-        """Begin the playlist. Returns False if the folder has no audio."""
+    def start(self, folder: Path, shuffle: bool = True,
+              fade_in_s: float = 0.0) -> bool:
+        """
+        Begin the playlist. Returns False if the folder has no audio.
+
+        With fade_in_s the music starts silent and swells, so it can begin
+        underneath a spoken line without stepping on it.
+        """
         pygame = self.player._require()
         self.tracks = playlist(folder)
         if not self.tracks:
@@ -214,7 +221,11 @@ class MusicPlayer:
             random.shuffle(self.tracks)
         self.index = 0
         self.playing = True
+        self._fade_in_from_zero = fade_in_s > 0
         self._load_current(pygame)
+        if fade_in_s > 0:
+            pygame.mixer.music.set_volume(0.0)
+            self.fade_in(fade_in_s)
         if self._pump is None or self._pump.done():
             self._pump = asyncio.create_task(self._advance_loop())
         return True
@@ -240,6 +251,18 @@ class MusicPlayer:
         except Exception as e:  # noqa: BLE001 - music must never kill a routine
             self.log(f"music error: {e}")
 
+    def _cancel_fade(self) -> None:
+        """A new volume move always wins over one still in flight."""
+        if self._fade is not None and not self._fade.done():
+            self._fade.cancel()
+        self._fade = None
+
+    def fade_in(self, seconds: float) -> None:
+        """Swell from silence to the configured level, in the background."""
+        self._cancel_fade()
+        self.log(f"music: fading in over {seconds:.0f}s")
+        self._fade = asyncio.create_task(self.fade_to(self.volume, seconds * 1000))
+
     async def fade_to(self, target: float, ms: float = 250.0) -> None:
         """
         Slide the music volume rather than jumping it.
@@ -264,12 +287,14 @@ class MusicPlayer:
         """Get out of the way of a voice line. Silent by default."""
         if not self.playing:
             return
+        self._cancel_fade()          # a fade-in must not fight the duck
         self._ducked = True
         await self.fade_to(self.duck_volume, 250)
 
     async def unduck(self) -> None:
         if not self.playing:
             return
+        self._cancel_fade()
         self._ducked = False
         await self.fade_to(self.volume, 450)
 
@@ -282,6 +307,7 @@ class MusicPlayer:
         """Fade to silence and stop. Never a hard cut."""
         if not self.playing:
             return
+        self._cancel_fade()
         pygame = self.player._require()
         self.log(f"music: fading out over {seconds:.0f}s")
         pygame.mixer.music.fadeout(int(seconds * 1000))
@@ -294,6 +320,7 @@ class MusicPlayer:
 
     def stop(self) -> None:
         """Immediate stop. Only the stop button should use this."""
+        self._cancel_fade()
         self.playing = False
         if self._pump:
             self._pump.cancel()

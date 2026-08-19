@@ -8,9 +8,11 @@
 ip = "192.168.1.50"
 
 [voice]
+# The voice is chosen on the settings page (it writes settings.json); this is
+# only the fallback for a config that predates that.
 # "edge" — Microsoft neural voices. Free, no key, needs internet AT RENDER
 #          TIME ONLY. Nothing touches the network while a routine runs.
-# "sapi" — Windows built-in. Offline, always available, robotic.
+# "sapi" - Windows built-in. Offline, always available, robotic.
 engine = "edge"
-name = "en-US-GuyNeural"
+name = "en-US-JennyNeural"
 rate = "+0%"

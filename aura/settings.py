@@ -42,11 +42,19 @@ class Settings:
     night_start_pct: int = 60
     night_end_pct: int = 1
     night_kelvin: int = 2200
+    # The morning music swells in under "good morning" rather than starting
+    # at full. Long enough that the first line sits clearly on top of it.
+    music_fade_in_s: float = 14.0
+
     # Fade lengths differ by intent. At bedtime a long fade helps you drift
     # off, so the music should disappear without you noticing. In the morning
     # you have just finished and are walking away — a long fade is dead air.
     music_fade_s: float = 20.0        # evening, at bedtime
     morning_fade_s: float = 3.0       # after the final click
+
+    # Which synthesised voice speaks the lines you have not recorded yourself.
+    # A recording always wins over this - see aura.speech.SpeechLibrary.
+    voice_name: str = "en-US-JennyNeural"
 
     voice_volume: float = 0.85
     music_volume: float = 0.45

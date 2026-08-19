@@ -5,8 +5,8 @@ MORNING
   1. ramp dark -> 100%, finishing exactly at wake time
   2. "good morning" at 100%
   3. "get up" a few seconds later
-  4. nag every 10s until you click CONTINUE (never gives up)
-  5. motivational music starts on that click
+  4. motivational music swells in under "good morning"
+  5. nag every 10s until you click I'M UP (never gives up)
   6. tasks announced over the music, ducked, no nagging
   7. click after each task; music keeps running throughout
   8. "all tasks complete", final click, music FADES out. Idle until night.
@@ -155,7 +155,7 @@ class Flow:
         """
         clips = self.nag_clips()
         if not clips:
-            await self.say("nag_get_up", duck=False)
+            await self.say("nag_get_up")
             return
         clip = clips[self._nag_i % len(clips)]
         self._nag_i += 1
@@ -163,7 +163,13 @@ class Flow:
         if self.sim or not self.player:
             await self.sleep(2.0)
             return
-        await asyncio.to_thread(self.player.say, clip, self.s.voice_volume, True)
+        if self.music:
+            await self.music.duck()
+        try:
+            await asyncio.to_thread(self.player.say, clip, self.s.voice_volume, True)
+        finally:
+            if self.music:
+                await self.music.unduck()
 
     async def set_light(self, pct: int, kelvin: int | None = None) -> None:
         k = kelvin if kelvin is not None else self.s.night_kelvin
@@ -176,12 +182,13 @@ class Flow:
         except Exception as e:  # noqa: BLE001 - a light fault must not kill the routine
             self.note(f"light failed: {e}")
 
-    def start_music(self, folder: Path | None) -> None:
+    def start_music(self, folder: Path | None, fade_in_s: float = 0.0) -> None:
         if self.sim or not self.music or not folder:
-            self.note(f"music start ({folder.name if folder else 'none'})")
+            self.note(f"music start ({folder.name if folder else 'none'})"
+                      + (f", fading in over {fade_in_s:g}s" if fade_in_s else ""))
             self.state.music = "(simulated)" if self.sim else None
             return
-        if self.music.start(folder):
+        if self.music.start(folder, fade_in_s=fade_in_s):
             self.state.music = self.music.now_playing
             self.note(f"music playing: {self.state.music}")
         else:
@@ -234,6 +241,12 @@ class MorningFlow(Flow):
             st.phase = Phase.STOPPED
             return "stopped"
 
+        # The music starts here, not on the click. It swells from silence under
+        # "good morning" — at the start of the fade it is quiet enough that the
+        # line sits clearly on top, and by "get up" it is at full and ducks
+        # like everything else.
+        self.start_music(self.motivation_dir, fade_in_s=s.music_fade_in_s)
+
         # 2-4. Good morning, then get up, then reminders on a loop — but the
         # button is live from the very first word. If you are already awake
         # when the light reaches full, you should be able to say so straight
@@ -252,6 +265,8 @@ class MorningFlow(Flow):
             # your click and the task actually stopping.
             if acked():
                 return
+            # No duck here: the music is still swelling from silence, so the
+            # line is clear anyway, and ducking would undo the fade-in.
             await self.say("good_morning", duck=False)
             if acked():
                 return
@@ -259,7 +274,7 @@ class MorningFlow(Flow):
             if acked():
                 return
             st.phase = Phase.GET_UP
-            await self.say("get_up", duck=False)
+            await self.say("get_up")
             while not acked():
                 await self.sleep(s.get_up_nag_interval_s)
                 if acked():
@@ -284,9 +299,6 @@ class MorningFlow(Flow):
         if self._stop.is_set():
             st.phase = Phase.STOPPED
             return "stopped"
-
-        # 5. music starts on that click
-        self.start_music(self.motivation_dir)
 
         # 6/7. tasks over the music, ducked, no nagging
         st.phase = Phase.TASKS

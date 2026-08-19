@@ -98,11 +98,31 @@ def settings() -> S.Settings:
     return S.load(SETTINGS_PATH)
 
 
+# Suggested first, because the full list is 300+ voices and most of them are
+# not what you want read to you at 6:30am. The live list is still offered.
+SUGGESTED_VOICES = [
+    ("en-US-JennyNeural", "American - warm, natural"),
+    ("en-US-AriaNeural", "American - clear, friendly"),
+    ("en-US-MichelleNeural", "American - soft"),
+    ("en-US-AvaNeural", "American - newest, very natural"),
+    ("en-GB-SoniaNeural", "British - calm"),
+    ("en-AU-NatashaNeural", "Australian - warm"),
+    ("en-IE-EmilyNeural", "Irish - gentle"),
+]
+
+
 def speech_lib() -> SpeechLibrary:
+    """
+    The synthesised voice comes from settings.json when set, aura.toml otherwise.
+
+    settings.json wins because the settings page owns it — aura.toml is the
+    set-once file and shouldn't be edited by the UI.
+    """
     v = cfg().get("voice", {})
+    name = settings().voice_name or v.get("name", "en-US-JennyNeural")
     return SpeechLibrary(TTS_DIR, engine=v.get("engine", "edge"),
-                         voice=v.get("name", "en-US-GuyNeural"),
-                         rate=v.get("rate", "+0%"), custom_dir=CUSTOM_DIR)
+                         voice=name, rate=v.get("rate", "+0%"),
+                         custom_dir=CUSTOM_DIR)
 
 
 def fail(e: Exception) -> JSONResponse:
@@ -200,6 +220,69 @@ async def render(force: bool = False):
         return {"ok": result["failed"] == 0, **result}
     except Exception as e:  # noqa: BLE001
         return fail(e)
+
+
+@app.get("/api/voices")
+async def api_voices():
+    """
+    The real voice list, fetched live.
+
+    Hard-coding names risks offering one that has been retired. This asks the
+    service and falls back to the suggestions only if the network is down.
+    """
+    suggested = [n for n, _ in SUGGESTED_VOICES]
+    try:
+        import edge_tts
+
+        vs = await edge_tts.list_voices()
+        out = [
+            {"name": v["ShortName"],
+             "label": f"{v['ShortName'].split('-', 2)[-1].replace('Neural', '')}"
+                      f"  ({v['Locale']})",
+             "locale": v["Locale"], "gender": v.get("Gender", "")}
+            for v in vs
+            if v["Locale"].startswith("en-") and v.get("Gender") == "Female"
+        ]
+        out.sort(key=lambda v: (v["name"] not in suggested, v["name"]))
+        return {"ok": True, "voices": out, "live": True,
+                "suggested": dict(SUGGESTED_VOICES)}
+    except Exception as e:  # noqa: BLE001
+        note(f"could not fetch the voice list ({type(e).__name__}) - using suggestions")
+        return {"ok": True, "live": False, "suggested": dict(SUGGESTED_VOICES),
+                "voices": [{"name": n, "label": n.split("-", 2)[-1].replace("Neural", ""),
+                            "locale": "-".join(n.split("-")[:2]), "gender": "Female"}
+                           for n, _ in SUGGESTED_VOICES]}
+
+
+@app.post("/api/voice/preview")
+async def api_voice_preview(body: dict):
+    """Render one sample line so you can hear a voice before committing to it."""
+    name = str(body.get("name", "")).strip()
+    if not name:
+        return JSONResponse({"ok": False, "error": "no voice given"}, 400)
+    text = body.get("text") or "Good morning. Time to get up."
+    dest = TTS_DIR / "_preview.mp3"
+    try:
+        TTS_DIR.mkdir(parents=True, exist_ok=True)
+        import edge_tts
+
+        await edge_tts.Communicate(text, name).save(str(dest))
+        if not dest.exists() or dest.stat().st_size == 0:
+            raise RuntimeError("no audio produced")
+        return {"ok": True}
+    except Exception as e:  # noqa: BLE001
+        msg = str(e)
+        if "NoAudioReceived" in type(e).__name__ or "no audio" in msg.lower():
+            msg = f"'{name}' produced nothing - it may have been retired"
+        return JSONResponse({"ok": False, "error": msg}, 400)
+
+
+@app.get("/api/voice/preview.mp3")
+async def api_voice_preview_file():
+    dest = TTS_DIR / "_preview.mp3"
+    if not dest.exists():
+        return JSONResponse({"ok": False, "error": "nothing rendered"}, 404)
+    return FileResponse(str(dest))
 
 
 # --- audio libraries -------------------------------------------------------
@@ -699,6 +782,22 @@ button.d{background:none;color:var(--bad);border:1px solid var(--line)}
   </div>
 
   <div class="card">
+    <h2>Voice</h2>
+    <div class="row">
+      <select id="voice" onchange="mark()"
+        style="flex:1;min-width:200px;font-size:15px;font-family:inherit;
+        background:var(--card);color:var(--fg);border:1px solid var(--line);
+        border-radius:10px;padding:10px"></select>
+      <button class="b g" onclick="previewVoice()">Preview</button>
+    </div>
+    <div class="hint" id="voicehint">
+      Used for any line you have not recorded yourself. Recording a line with
+      the &#9679; button always overrides this, so you can mix the two freely.
+      Changing the voice re-records the synthesised lines next time you press
+      Prepare voice.</div>
+  </div>
+
+  <div class="card">
     <h2>Light</h2>
     <div class="row">
       <button class="b g" onclick="light(null)">Turn off</button>
@@ -928,7 +1027,7 @@ async function delFile(k,f){await fetch(`/api/library/${k}/${f}`,{method:'DELETE
 async function load(){
   ST=await (await fetch('/api/settings')).json();
   $('wake').value=ST.settings.wake_time; $('bed').value=ST.settings.bedtime;
-  drawTasks(); drawSchedule(ST.schedule); drawFiles(); drawNags(); drawFixed();
+  drawTasks(); drawSchedule(ST.schedule); drawFiles(); loadVoices(); drawNags(); drawFixed();
   DIRTY=false;
   $('sub').textContent=ST.unrendered.length
     ? `${ST.unrendered.length} line(s) not recorded yet`
@@ -940,6 +1039,7 @@ async function load(){
 }
 async function save(){
   ST.settings.wake_time=$('wake').value; ST.settings.bedtime=$('bed').value;
+  if($('voice').value) ST.settings.voice_name=$('voice').value;
   const r=await fetch('/api/settings',{method:'PUT',
     headers:{'Content-Type':'application/json'},body:JSON.stringify(ST.settings)});
   const j=await r.json();
@@ -952,6 +1052,37 @@ async function record(){
   const j=await post('/api/render');
   if(j.ok)toast(j.rendered?`Prepared ${j.rendered} line(s)`:'Everything ready');
   load();
+}
+let VOICES=null;
+async function loadVoices(){
+  try{
+    const j=await (await fetch('/api/voices')).json();
+    VOICES=j;
+    const sel=$('voice'), want=ST.settings.voice_name;
+    const sug=j.suggested||{};
+    sel.innerHTML=j.voices.map(v=>{
+      const note=sug[v.name]?` - ${sug[v.name]}`:'';
+      return `<option value="${v.name}"${v.name===want?' selected':''}
+        >${v.label}${note}</option>`;
+    }).join('');
+    // A voice saved earlier might not be in the list (retired, or offline).
+    if(want && !j.voices.some(v=>v.name===want)){
+      sel.insertAdjacentHTML('afterbegin',
+        `<option value="${want}" selected>${want} (current)</option>`);
+    }
+    if(!j.live) $('voicehint').insertAdjacentHTML('beforeend',
+      '<br><b>Offline</b> - showing suggestions only, not the full list.');
+  }catch(e){}
+}
+async function previewVoice(){
+  const name=$('voice').value;
+  toast('Rendering a sample...');
+  const r=await fetch('/api/voice/preview',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  const j=await r.json();
+  if(!j.ok){toast(j.error,true);return;}
+  new Audio('/api/voice/preview.mp3?t='+Date.now()).play()
+    .catch(e=>toast('Could not play: '+e.message,true));
 }
 async function setAuto(){await post('/api/schedule',{enabled:$('auto').checked});}
 async function light(pct){
