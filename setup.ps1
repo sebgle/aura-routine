@@ -1,5 +1,5 @@
 <#
-    setup.ps1 — one command to go from a fresh clone to a running app.
+    setup.ps1 - one command to go from a fresh clone to a running app.
 
         Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
         .\setup.ps1
@@ -56,7 +56,7 @@ Step 6 "Looking for your bulb"
 Write-Host "    (enable 'Allow local communication' in the WiZ app first)" -ForegroundColor Gray
 & $venvPy aura_web.py --discover
 
-Write-Host "`n─────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "`n---------------------------------------------" -ForegroundColor DarkGray
 Write-Host "Setup complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Start it:      .\.venv\Scripts\python.exe aura_web.py" -ForegroundColor White

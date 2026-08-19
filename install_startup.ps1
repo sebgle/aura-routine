@@ -1,5 +1,5 @@
 <#
-    install_startup.ps1 — keep aura running so it can fire by itself.
+    install_startup.ps1 - keep aura running so it can fire by itself.
 
     Run once, from a normal (non-admin) PowerShell in Desktop\aura\tools\:
 
@@ -7,7 +7,7 @@
         .\install_startup.ps1
 
     Registers a scheduled task that starts the app at logon and restarts it if
-    it ever exits. The app's own scheduler does the timing — Windows only has
+    it ever exits. The app's own scheduler does the timing - Windows only has
     to keep the process alive.
 #>
 

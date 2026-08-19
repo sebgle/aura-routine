@@ -1,0 +1,8 @@
+# PowerShell 5.1 reads .ps1 as Windows-1252 unless there is a UTF-8 BOM, so a
+# UTF-8 em dash arrives as three CP1252 characters - one of which is a smart
+# quote that PowerShell treats as a string delimiter. Keep these files ASCII
+# and CRLF.
+*.ps1 text eol=crlf working-tree-encoding=UTF-8
+*.py  text eol=lf
+*.md  text eol=lf
+*.toml text eol=lf
